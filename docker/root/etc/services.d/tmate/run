@@ -1,0 +1,105 @@
+#!/usr/bin/with-contenv bash
+
+SOCK=/var/run/tmate/tmate.sock
+LOG=/var/log/tmate/tmate.log
+
+if [ "$ENV" == "prod" ]; then
+    echo "not running tmate, env is production"
+    # and not going to allow this process to exit
+    while :; do
+        sleep 65535
+    done
+    exit 0
+fi
+
+set -exo pipefail
+
+cd /root
+
+# setup tmate environment
+
+# create user's ssh keys
+test -f /root/.ssh/id_rsa || ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -q -N ""
+
+# ensure socket directory exists
+mkdir -p "$(dirname "$SOCK")"
+
+# ensure log file exists
+mkdir -p "$(dirname "$LOG")"
+touch "$LOG"
+
+# starting ssh agent for tmate session to use
+eval "$(ssh-agent -s)"
+
+# ensuring there is one user key in the ssh agent for the tmate session to use
+ssh-add ~/.ssh/id_rsa
+
+# print the tmate version
+tmate -V
+
+# tmate requires a pseudo terminal
+# and we need to use a script to pipe the ssh connection info
+# back to the docker container logs
+install /dev/stdin /tmp/start-tmate.sh <<'EOF'
+
+set -euxo pipefail
+
+export SOCK="$1"
+export LOG="$2"
+
+while :; do
+    (
+        set +euo pipefail
+
+        # start a child fork that logs
+        # when the tmux server has bootstrapped properly
+        # and then terminates
+        (
+            while :; do
+                rw_ssh="$(tmate -S "$SOCK" display -p '#{tmate_ssh}')"
+                ro_ssh="$(tmate -S "$SOCK" display -p '#{tmate_ssh_ro}')"
+
+                if [ -n "$rw_ssh" ] && [ -n "$ro_ssh" ]; then
+                    echo "RW-SSH CONNECTION: ${rw_ssh}" >> "$LOG"
+                    echo "RO-SSH CONNECTION: ${ro_ssh}" >> "$LOG"
+                    break
+                fi
+
+                # if parent process has died, means tmate process has died
+                if ! kill -0 $$ 2>/dev/null ; then
+                    break
+                fi
+
+                sleep 1
+            done
+        ) &
+
+        echo "starting new tmate" >> "$LOG"
+        tmate -S "$SOCK" >/dev/null 2>/dev/null
+
+        # if tmate ever dies, then return from this process
+        while :; do
+            pid="$(ps a | grep 'tmate -S ' | grep -v grep | awk '{print $1}')"
+            if [ -z "$pid" ]; then
+                echo "tmate exited"
+                break
+            fi
+            sleep 60
+        done
+    )
+    sleep 10
+done
+
+EOF
+
+# make tmate start in a pseudo terminal within screen
+# in order for the pseudo terminal to get created you must supply the args
+# -dm for detached mode with screen
+screen -dm \
+    bash /tmp/start-tmate.sh "$SOCK" "$LOG"
+
+# we will never return from this command
+# and nothing will ever copy-truncate this log file
+# unless someone messes up the bootstrap bash script this will not be a problem
+# at worst the line "starting new tmate" will be repeated every second
+tail -f "$LOG"
