@@ -42,9 +42,9 @@ RUN if ! ( command -v ssh-keygen && command -v locale-gen && command -v screen &
     && locale-gen
 
 # ensure utf8 env variables
-ENV LANG en_US.UTF-8 \
-    LANGUAGE en_US:en \
-    LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8 \
+    LANGUAGE=en_US:en \
+    LC_ALL=en_US.UTF-8
 
 # install tmate
 ENV TMATE_VERSION 2.2.1
